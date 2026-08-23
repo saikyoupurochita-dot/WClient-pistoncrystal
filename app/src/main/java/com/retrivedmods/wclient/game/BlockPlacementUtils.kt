@@ -1,10 +1,12 @@
 package com.retrivedmods.wclient.game
 
+import com.retrivedmods.wclient.util.PacketDebugLog
 import org.cloudburstmc.math.vector.Vector3i
 import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData
 import org.cloudburstmc.protocol.bedrock.data.inventory.transaction.InventoryActionData
 import org.cloudburstmc.protocol.bedrock.data.inventory.transaction.InventorySource
+import org.cloudburstmc.protocol.bedrock.packet.InventoryTransactionPacket
 
 /**
  * Shared helpers for modules that place blocks via InventoryTransactionPacket (PistonCrystalModule,
@@ -92,6 +94,31 @@ object BlockPlacementUtils {
             hotbarSlot,
             current,
             afterUse
+        )
+    }
+
+    /**
+     * Sends [packet] and unconditionally logs it via PacketDebugLog (shown as [AutoPlaceLog] in
+     * chat when PacketLoggerModule is enabled) - use this instead of calling
+     * session.serverBound(packet) directly for placement transactions, so it's always possible to
+     * tell "nothing is being sent" apart from "something is being sent and rejected" by the
+     * server.
+     */
+    fun sendAndLog(session: GameSession, packet: InventoryTransactionPacket) {
+        session.serverBound(packet)
+        PacketDebugLog.log(
+            session,
+            "AutoPlaceLog",
+            buildString {
+                append("blockPosition: ${packet.blockPosition}\n")
+                append("blockFace: ${packet.blockFace}\n")
+                append("blockDefinition: ${packet.blockDefinition}\n")
+                append("clickPosition: ${packet.clickPosition}\n")
+                append("playerPosition: ${packet.playerPosition}\n")
+                append("hotbarSlot: ${packet.hotbarSlot}\n")
+                append("itemInHand: ${packet.itemInHand}\n")
+                append("actions: ${packet.actions}")
+            }
         )
     }
 
