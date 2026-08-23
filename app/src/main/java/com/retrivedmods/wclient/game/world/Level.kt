@@ -14,6 +14,7 @@ import org.cloudburstmc.protocol.bedrock.packet.AddPlayerPacket
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket
 import org.cloudburstmc.protocol.bedrock.packet.ChangeDimensionPacket
 import org.cloudburstmc.protocol.bedrock.packet.ChunkRadiusUpdatedPacket
+import org.cloudburstmc.protocol.bedrock.packet.ClientCacheMissResponsePacket
 import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket
 import org.cloudburstmc.protocol.bedrock.packet.PlayerListPacket
 import org.cloudburstmc.protocol.bedrock.packet.RemoveEntityPacket
@@ -21,6 +22,7 @@ import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket
 import org.cloudburstmc.protocol.bedrock.packet.SubChunkPacket
 import org.cloudburstmc.protocol.bedrock.packet.TakeItemEntityPacket
 import org.cloudburstmc.protocol.bedrock.packet.UpdateBlockPacket
+import org.cloudburstmc.protocol.bedrock.packet.UpdateSubChunkBlocksPacket
 import org.cloudburstmc.math.vector.Vector3f
 import org.cloudburstmc.math.vector.Vector3i
 import java.util.UUID
@@ -35,13 +37,31 @@ class Level(val session: GameSession) {
     val playerMap = ConcurrentHashMap<UUID, PlayerListPacket.Entry>()
 
     // --- world/chunk block tracking -----------------------------------------------------------
-    // Ported (with real changes, see Chunk/ChunkSection/BlockStorage) from ProtoHax. Only the
-    // "normal" full LevelChunkPacket path is handled - servers using blob (disk) caching or the
-    // newer per-subchunk request system (SubChunkPacket) won't have their blocks tracked here,
-    // since that needs a blob cache we don't implement. UpdateBlockPacket (individual block
-    // changes) IS handled, so blocks placed/broken after a chunk loads stay accurate.
+    // Ported (with real changes, see Chunk/ChunkSection/BlockStorage) from ProtoHax. Handles the
+    // "normal" full LevelChunkPacket path, the newer per-subchunk request system (SubChunkPacket),
+    // and blob-cache chunk loading (via ClientCacheMissResponsePacket, see pendingCacheBlobs
+    // below) - so real block data is tracked regardless of which of the three loading methods a
+    // given server uses. UpdateBlockPacket (single block changes) and UpdateSubChunkBlocksPacket
+    // (batch changes - explosions, redstone, etc.) are both handled, so blocks placed/broken
+    // after a chunk loads stay accurate.
 
     val chunks = ConcurrentHashMap<Long, Chunk>()
+
+    /**
+     * Blob-cache loading (LevelChunkPacket.isCachingEnabled) doesn't put block data directly in
+     * the LevelChunkPacket - instead it lists content-hash IDs (one per subchunk, plus one for
+     * biome data, in bottom-to-top order) and the real client separately negotiates with the
+     * server over which hashes it already has cached (ClientCacheBlobStatusPacket) vs needs sent
+     * (ClientCacheMissResponsePacket, hash -> raw payload). As a relay we don't need to run that
+     * negotiation ourselves - the real client does it - we just need to passively watch
+     * ClientCacheMissResponsePacket go by and match each hash back to the (chunk, section) it
+     * belongs to, which we recorded here when the LevelChunkPacket first listed it. A hash that
+     * was already in the real client's own cache never triggers a miss response and so never
+     * arrives at all - that subchunk just silently stays untracked (same as any other subchunk we
+     * haven't seen data for yet), which is a value-if-known / not-an-error position, matching
+     * every other gap in this tracking (unloaded chunks, servers that don't use this feature).
+     */
+    private val pendingCacheBlobs = ConcurrentHashMap<Long, Pair<Long, Int>>() // blobId -> (chunkHash, sectionIndex); sectionIndex == -1 means "biome blob, ignore"
 
     var is384WorldSupported = false
         private set
@@ -53,6 +73,7 @@ class Level(val session: GameSession) {
         entityMap.clear()
         playerMap.clear()
         chunks.clear()
+        pendingCacheBlobs.clear()
     }
 
     fun onPacketBound(packet: BedrockPacket) {
@@ -78,14 +99,20 @@ class Level(val session: GameSession) {
                     return
                 }
 
-                if (packet.isCachingEnabled) {
-                    // blob-cache chunk loading isn't supported, see note above
-                    return
-                }
-
                 val chunk = Chunk(packet.chunkX, packet.chunkZ, is384WorldSupported, session.blockMapping)
                 try {
-                    if (!packet.isRequestSubChunks) {
+                    if (packet.isCachingEnabled) {
+                        // No raw data here - record which (chunk, section) each listed hash is
+                        // for, then wait for ClientCacheMissResponsePacket (below) to supply the
+                        // actual bytes for whichever ones the real client didn't already have
+                        // cached. Per protocol, blobIds is subChunksLength subchunk hashes
+                        // (bottom-to-top) followed by exactly one biome-data hash - we only care
+                        // about the former.
+                        packet.blobIds.forEachIndexed { index, blobId ->
+                            val sectionIndex = if (index < packet.subChunksLength) index else -1
+                            pendingCacheBlobs[blobId] = chunk.hash to sectionIndex
+                        }
+                    } else if (!packet.isRequestSubChunks) {
                         // duplicate() gives us an independent reader index over the same underlying
                         // memory (refcount shared with the original packet), so parsing here can
                         // never disturb packet.data's own reader index / the relay's forwarding of
@@ -93,14 +120,32 @@ class Level(val session: GameSession) {
                         val buf = packet.data.duplicate()
                         chunk.read(buf, packet.subChunksLength)
                     }
-                    // Either way, register the (possibly still-empty) chunk now: when
-                    // isRequestSubChunks is true, LevelChunkPacket only carries biome/border data
-                    // and the actual block data streams in afterwards via SubChunkPacket, which
-                    // needs a Chunk already sitting in the map to attach its sections to.
+                    // Either way, register the (possibly still-empty) chunk now: both
+                    // isCachingEnabled and isRequestSubChunks mean the actual block data streams
+                    // in afterwards (via ClientCacheMissResponsePacket or SubChunkPacket
+                    // respectively), which needs a Chunk already sitting in the map to attach its
+                    // sections to.
                     chunks[chunk.hash] = chunk
                 } catch (e: Exception) {
                     // malformed/unexpected chunk data for this protocol version - skip it rather
                     // than crash the relay
+                }
+            }
+
+            is ClientCacheMissResponsePacket -> {
+                if (!session.isBlockMappingInitialized) return
+
+                packet.blobs.forEach { (blobId, data) ->
+                    val target = pendingCacheBlobs.remove(blobId) ?: return@forEach
+                    val (chunkHash, sectionIndex) = target
+                    if (sectionIndex < 0) return@forEach // biome blob - nothing for us to parse
+
+                    try {
+                        val chunk = chunks[chunkHash] ?: return@forEach
+                        chunk.readSubChunk(sectionIndex, data.duplicate())
+                    } catch (e: Exception) {
+                        // same reasoning as the LevelChunkPacket catch above - skip, don't crash
+                    }
                 }
             }
 
@@ -148,6 +193,21 @@ class Level(val session: GameSession) {
                         packet.blockPosition.z,
                         packet.definition.runtimeId
                     )
+                }
+            }
+
+            is UpdateSubChunkBlocksPacket -> {
+                // Batch block-change variant of UpdateBlockPacket - the server uses this for
+                // several simultaneous changes in one subchunk (explosions, redstone, pistons,
+                // etc.) instead of one UpdateBlockPacket per block. We had no handler for this at
+                // all before, so any such batch change left our tracked world state stale until
+                // the whole chunk happened to reload. Each entry already carries an absolute world
+                // position, same as UpdateBlockPacket.blockPosition. Only standardBlocks (the
+                // primary layer) is applied, matching how UpdateBlockPacket above only acts on
+                // dataLayer == 0 - extraBlocks is the secondary/waterlogged layer we don't track.
+                packet.standardBlocks.forEach { entry ->
+                    val pos = entry.position
+                    setBlockIdAt(pos.x, pos.y, pos.z, entry.definition.runtimeId)
                 }
             }
 
@@ -299,9 +359,10 @@ class Level(val session: GameSession) {
      * points back at [pos]. Checks straight down first (the common "place on the ground" case),
      * then up, then the four horizontal neighbors.
      *
-     * Returns null if [pos] itself isn't currently air (already occupied, or the chunk simply
-     * isn't tracked/loaded yet - see the LevelChunkPacket handling notes above for when that
-     * happens) or if none of its neighbors are known to be solid, e.g. floating in open air.
+     * Returns null if [pos] itself isn't currently air (already occupied, or the chunk/subchunk
+     * simply isn't tracked yet - see the LevelChunkPacket/ClientCacheMissResponsePacket handling
+     * notes above for the ways that can happen) or if none of its neighbors are known to be
+     * solid, e.g. floating in open air.
      *
      * @return (position of the block to click, Bedrock face index of that block to click:
      *   0=down,1=up,2=north,3=south,4=west,5=east) or null
