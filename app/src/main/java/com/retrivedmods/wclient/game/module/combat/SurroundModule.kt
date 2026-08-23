@@ -251,7 +251,7 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
             blockDefinition = BlockPlacementUtils.referenceBlockDefinition(session, refPos)
             actions.add(BlockPlacementUtils.consumeItemAction(slot, heldItem))
         }
-        session.serverBound(packet)
+        BlockPlacementUtils.sendAndLog(session, packet)
         BlockPlacementUtils.predictLocalBlockChange(session, pos, placedDefinition)
     }
 

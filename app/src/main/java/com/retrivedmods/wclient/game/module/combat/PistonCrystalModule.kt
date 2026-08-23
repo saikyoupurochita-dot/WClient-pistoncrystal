@@ -375,7 +375,7 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
             blockDefinition = BlockPlacementUtils.referenceBlockDefinition(session, refPos)
             actions.add(BlockPlacementUtils.consumeItemAction(slot, heldItem))
         }
-        session.serverBound(transaction)
+        BlockPlacementUtils.sendAndLog(session, transaction)
         BlockPlacementUtils.predictLocalBlockChange(session, pos, placedDefinition)
         return true
     }
