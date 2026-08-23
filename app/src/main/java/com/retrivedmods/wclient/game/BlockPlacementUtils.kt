@@ -46,13 +46,24 @@ object BlockPlacementUtils {
      * Minecraft client couldn't place there either in that case.
      */
     fun findReferenceBlock(session: GameSession, pos: Vector3i): Pair<Vector3i, Int>? {
+        // Prefer a neighbor we can positively confirm is solid. Sending blockDefinition as
+        // "minecraft:unknown" for an untracked neighbor gets the whole transaction rejected by
+        // the server (confirmed via [AutoPlaceLog] - a real attempt with blockDefinition=unknown
+        // never resulted in a placed block), since the server validates that field against its
+        // own real world state. Only fall back to an unconfirmed guess - still worth trying, it
+        // might happen to be right - if nothing around pos is actually known.
+        var fallback: Pair<Vector3i, Int>? = null
         for ((normal, face) in FACES) {
             val neighbor = pos.add(-normal.x, -normal.y, -normal.z)
-            if (session.level.getBlockAt(neighbor).identifier != "minecraft:air") {
+            val identifier = session.level.getBlockAt(neighbor).identifier
+            if (identifier != "minecraft:air" && identifier != "minecraft:unknown") {
                 return neighbor to face
             }
+            if (identifier == "minecraft:unknown" && fallback == null) {
+                fallback = neighbor to face
+            }
         }
-        return null
+        return fallback
     }
 
     /**
