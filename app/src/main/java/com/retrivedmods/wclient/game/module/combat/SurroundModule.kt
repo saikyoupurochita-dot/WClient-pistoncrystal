@@ -158,7 +158,14 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
     /** [Surround.cpp]'s canPlaceBlock(): the target itself must be air (or, with airPlace, anything). */
     private fun canPlaceAt(pos: Vector3i): Boolean {
         if (airPlace) return true
-        return session.level.getBlockAt(pos).identifier == "minecraft:air"
+        val identifier = session.level.getBlockAt(pos).identifier
+        // Many servers use chunk-loading methods this Level doesn't track (blob cache / per-
+        // subchunk requests), so block state often comes back "minecraft:unknown" rather than a
+        // confirmed real block - confirmed via [SurroundDiag]: every position read back unknown on
+        // such a server, which made this always return false and silently disabled placement
+        // entirely (placeList size was always 0). Treat unknown the same as air - only refuse when
+        // we positively know a real block is already there.
+        return identifier == "minecraft:air" || identifier == "minecraft:unknown"
     }
 
     private fun computePlaceList(): MutableList<Vector3i> {

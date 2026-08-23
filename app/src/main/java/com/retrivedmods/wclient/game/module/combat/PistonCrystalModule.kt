@@ -220,7 +220,17 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
         return Placement(crystalPos, pistonPos, redstonePos, dir)
     }
 
-    private fun isAir(pos: Vector3i) = session.level.getBlockAt(pos).identifier == "minecraft:air"
+    private fun isAir(pos: Vector3i): Boolean {
+        val identifier = session.level.getBlockAt(pos).identifier
+        // Many servers use chunk-loading methods this Level doesn't track (blob cache / per-
+        // subchunk requests), so block state often comes back "minecraft:unknown" rather than a
+        // confirmed real block - see SurroundModule.canPlaceAt for the same issue, confirmed via
+        // [SurroundDiag] logging. Treat unknown the same as air for "is there space here" checks;
+        // isValidCrystalBase below deliberately stays strict since it needs to tell a real
+        // obsidian/bedrock base apart from "don't know" - our own just-placed piston obsidian is
+        // already visible there via predictLocalBlockChange by the time it's checked.
+        return identifier == "minecraft:air" || identifier == "minecraft:unknown"
+    }
 
     private fun isValidCrystalBase(pos: Vector3i): Boolean {
         val id = session.level.getBlockAt(pos).identifier
