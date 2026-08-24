@@ -56,6 +56,14 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
 
         // Direction.X_PLUS, X_MINUS, Z_PLUS, Z_MINUS from PistonCrystal.h
         val DIRECTIONS = listOf(Vector3i.from(1, 0, 0), Vector3i.from(-1, 0, 0), Vector3i.from(0, 0, 1), Vector3i.from(0, 0, -1))
+
+        // If a step (piston/crystal/redstone) hasn't advanced within this long, assume the server
+        // silently rejected that placement - Bedrock has no NACK packet for a bad transaction, it
+        // just does nothing, so our own predictLocalBlockChange() optimistic update (needed so the
+        // *next* step's placement checks don't see stale data) would otherwise keep believing that
+        // step succeeded forever, with nothing to ever correct it. Give up and let the search for
+        // a fresh placement run again next tick instead of getting stuck mid-sequence forever.
+        const val STEP_TIMEOUT_MS = 3000L
     }
 
     private data class Placement(val crystalPos: Vector3i, val pistonPos: Vector3i, val redstonePos: Vector3i, val dir: Vector3i)
@@ -63,6 +71,11 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
     private enum class Step { PISTON, CRYSTAL, REDSTONE, DONE }
 
     private var step = Step.DONE
+        set(value) {
+            field = value
+            stepStartedAt = System.currentTimeMillis()
+        }
+    private var stepStartedAt = 0L
     private var placement: Placement? = null
     private var tickCounter = 0
     private var oldSlot = -1
@@ -110,6 +123,11 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
         // Guaranteed detonation path - runs every tick regardless of placement state.
         if (autoAttackCrystal) {
             attackNearbyCrystals()
+        }
+
+        if (step != Step.DONE && System.currentTimeMillis() - stepStartedAt > STEP_TIMEOUT_MS) {
+            diag("step $step timed out after ${STEP_TIMEOUT_MS}ms with no progress (server likely rejected the placement) - resetting")
+            resetState()
         }
 
         if (step == Step.DONE) {
@@ -220,7 +238,17 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
         return Placement(crystalPos, pistonPos, redstonePos, dir)
     }
 
-    private fun isAir(pos: Vector3i) = session.level.getBlockAt(pos).identifier == "minecraft:air"
+    private fun isAir(pos: Vector3i): Boolean {
+        val identifier = session.level.getBlockAt(pos).identifier
+        // Many servers use chunk-loading methods this Level doesn't track (blob cache / per-
+        // subchunk requests), so block state often comes back "minecraft:unknown" rather than a
+        // confirmed real block - see SurroundModule.canPlaceAt for the same issue, confirmed via
+        // [SurroundDiag] logging. Treat unknown the same as air for "is there space here" checks;
+        // isValidCrystalBase below deliberately stays strict since it needs to tell a real
+        // obsidian/bedrock base apart from "don't know" - our own just-placed piston obsidian is
+        // already visible there via predictLocalBlockChange by the time it's checked.
+        return identifier == "minecraft:air" || identifier == "minecraft:unknown"
+    }
 
     private fun isValidCrystalBase(pos: Vector3i): Boolean {
         val id = session.level.getBlockAt(pos).identifier
@@ -365,7 +393,7 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
             blockDefinition = BlockPlacementUtils.referenceBlockDefinition(session, refPos)
             actions.add(BlockPlacementUtils.consumeItemAction(slot, heldItem))
         }
-        session.serverBound(transaction)
+        BlockPlacementUtils.sendAndLog(session, transaction)
         BlockPlacementUtils.predictLocalBlockChange(session, pos, placedDefinition)
         return true
     }
