@@ -304,6 +304,6 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
         // itemInHand didn't actually match its own hotbarSlot, which is exactly the kind of
         // mismatch a server's inventory validation rejects outright. Predict it locally, the same
         // way a real client's own selection updates immediately without waiting on a round trip.
-        session.localPlayer.inventory.heldItemSlot = slot
+        session.localPlayer.inventory.predictHeldItemSlot(slot)
     }
 }

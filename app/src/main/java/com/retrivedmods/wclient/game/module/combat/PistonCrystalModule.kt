@@ -425,7 +425,7 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
         // PlayerInventory.heldItemSlot gets updated, so without this it never changes and
         // localPlayer.inventory.hand keeps pointing at the wrong item - see SurroundModule's
         // switchToSlot for the full explanation.
-        session.localPlayer.inventory.heldItemSlot = slot
+        session.localPlayer.inventory.predictHeldItemSlot(slot)
     }
 
     private var lastWarnedMessage: String? = null
