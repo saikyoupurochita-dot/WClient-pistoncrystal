@@ -14,6 +14,7 @@ import org.cloudburstmc.protocol.bedrock.packet.AddPlayerPacket
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket
 import org.cloudburstmc.protocol.bedrock.packet.ChangeDimensionPacket
 import org.cloudburstmc.protocol.bedrock.packet.ChunkRadiusUpdatedPacket
+import org.cloudburstmc.protocol.bedrock.packet.ClientCacheBlobStatusPacket
 import org.cloudburstmc.protocol.bedrock.packet.ClientCacheMissResponsePacket
 import org.cloudburstmc.protocol.bedrock.packet.LevelChunkPacket
 import org.cloudburstmc.protocol.bedrock.packet.PlayerListPacket
@@ -129,6 +130,23 @@ class Level(val session: GameSession) {
                 } catch (e: Exception) {
                     // malformed/unexpected chunk data for this protocol version - skip it rather
                     // than crash the relay
+                }
+            }
+
+            is ClientCacheBlobStatusPacket -> {
+                // Rewrite what the real client reports having cached (acks) into "don't have it"
+                // (naks) before this goes on to the server. Without this, any blob the real
+                // client's on-device cache already had from a previous session never gets resent
+                // at all - the bytes never cross the network, so there's nothing for us to
+                // passively observe no matter what ClientCacheMissResponsePacket handling we add.
+                // Forcing every ack into a nak makes the server treat everything as a cache miss
+                // and resend full data every time, which we can then always track via
+                // ClientCacheMissResponsePacket above. The real client doesn't notice or care -
+                // it just receives fresh data instead of using its local cache; functionally
+                // identical, just slightly less bandwidth-efficient.
+                if (packet.acks.isNotEmpty()) {
+                    packet.naks.addAll(packet.acks)
+                    packet.acks.clear()
                 }
             }
 
