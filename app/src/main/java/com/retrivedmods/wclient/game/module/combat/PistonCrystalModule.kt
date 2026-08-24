@@ -420,6 +420,12 @@ class PistonCrystalModule : Module("piston_crystal", ModuleCategory.Combat) {
         // learned about the switch, so every placement afterwards referenced a hotbar slot/item
         // the server didn't think was selected and rejected it.
         session.serverBound(packet)
+
+        // session.serverBound() bypasses the interception pipeline that's the only place
+        // PlayerInventory.heldItemSlot gets updated, so without this it never changes and
+        // localPlayer.inventory.hand keeps pointing at the wrong item - see SurroundModule's
+        // switchToSlot for the full explanation.
+        session.localPlayer.inventory.heldItemSlot = slot
     }
 
     private var lastWarnedMessage: String? = null

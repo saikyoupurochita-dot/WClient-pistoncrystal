@@ -294,5 +294,16 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
         // learned about the switch, so every placement afterwards referenced a hotbar slot/item
         // the server didn't think was selected and rejected it.
         session.serverBound(packet)
+
+        // session.serverBound() bypasses the normal interception pipeline entirely (see
+        // GameSession/WRelaySession), which is the ONLY place PlayerInventory.heldItemSlot gets
+        // updated (it only listens for packets that pass through there, i.e. the real client's
+        // own traffic). Without this, heldItemSlot silently never changes, so
+        // localPlayer.inventory.hand (= content[heldItemSlot]) kept pointing at whatever was
+        // selected before Surround/PistonCrystal ever ran - meaning every placement packet's
+        // itemInHand didn't actually match its own hotbarSlot, which is exactly the kind of
+        // mismatch a server's inventory validation rejects outright. Predict it locally, the same
+        // way a real client's own selection updates immediately without waiting on a round trip.
+        session.localPlayer.inventory.heldItemSlot = slot
     }
 }
