@@ -87,12 +87,29 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
             surroundDiagTickCounter++
             if (surroundDiagTickCounter % 40 == 0) {
                 val pos = localPlayer.vec3Position
-                val currentPos = Vector3i.from(floor(pos.x).toInt(), floor(pos.y + 0.5f).toInt(), floor(pos.z).toInt())
-                val feetBelow = session.level.getBlockAt(currentPos.add(0, -1, 0)).identifier
-                val north = session.level.getBlockAt(currentPos.add(0, -1, -1)).identifier
+                // floor(pos.y), not floor(pos.y + 0.5f) - that extra 0.5 effectively rounded to
+                // the nearest block level instead of taking the block the feet actually occupy,
+                // so it silently referenced a level 1 too high whenever the fractional part of
+                // pos.y was >= 0.5 (which is most of the time - players are rarely exactly on a
+                // block boundary). Must match computePlaceList's currentPos below exactly, or
+                // this diagnostic prints a different ring than the one actually being computed.
+                val currentPos = Vector3i.from(floor(pos.x).toInt(), floor(pos.y).toInt(), floor(pos.z).toInt())
+                val cells = listOf(
+                    "N(0,-1)" to Vector3i.from(0, 0, -1),
+                    "S(0,1)" to Vector3i.from(0, 0, 1),
+                    "W(-1,0)" to Vector3i.from(-1, 0, 0),
+                    "E(1,0)" to Vector3i.from(1, 0, 0),
+                    "center-below(0,0)" to Vector3i.from(0, -1, 0)
+                )
+                val cellDump = cells.joinToString(" | ") { (label, offset) ->
+                    val cellPos = currentPos.add(offset.x, offset.y, offset.z)
+                    val below = currentPos.add(offset.x, offset.y - 1, offset.z)
+                    val cellId = session.level.getBlockAt(cellPos).identifier
+                    val belowId = session.level.getBlockAt(below).identifier
+                    "$label:cell=$cellId,below=$belowId,canPlace=${canPlaceAt(cellPos)}"
+                }
                 session.displayClientMessage(
-                    "§b[SurroundDiag] placeList size=${placeList.size}, airPlace=$airPlace, " +
-                        "block directly below feet=$feetBelow, block below N cell=$north, obsidianSlot=$obsidianSlot"
+                    "§b[SurroundDiag] placeList size=${placeList.size}, airPlace=$airPlace, obsidianSlot=$obsidianSlot\n$cellDump"
                 )
             }
         }
@@ -171,7 +188,9 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
     private fun computePlaceList(): MutableList<Vector3i> {
         val localPlayer = session.localPlayer
         val pos = localPlayer.vec3Position
-        val currentPos = Vector3i.from(floor(pos.x).toInt(), floor(pos.y + 0.5f).toInt(), floor(pos.z).toInt())
+        // floor(pos.y), not floor(pos.y + 0.5f) - see the diagnostic block above for why the +0.5
+        // was wrong (silently referenced a level 1 too high most of the time).
+        val currentPos = Vector3i.from(floor(pos.x).toInt(), floor(pos.y).toInt(), floor(pos.z).toInt())
 
         var xStart = -1
         var zStart = -1
@@ -251,7 +270,7 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
             blockDefinition = BlockPlacementUtils.referenceBlockDefinition(session, refPos)
             actions.add(BlockPlacementUtils.consumeItemAction(slot, heldItem))
         }
-        BlockPlacementUtils.sendAndLog(session, packet)
+        session.serverBound(packet)
         BlockPlacementUtils.predictLocalBlockChange(session, pos, placedDefinition)
     }
 
