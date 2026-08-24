@@ -1,10 +1,12 @@
 package com.retrivedmods.wclient.game
 
+import com.retrivedmods.wclient.util.PacketDebugLog
 import org.cloudburstmc.math.vector.Vector3i
 import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData
 import org.cloudburstmc.protocol.bedrock.data.inventory.transaction.InventoryActionData
 import org.cloudburstmc.protocol.bedrock.data.inventory.transaction.InventorySource
+import org.cloudburstmc.protocol.bedrock.packet.InventoryTransactionPacket
 
 /**
  * Shared helpers for modules that place blocks via InventoryTransactionPacket (PistonCrystalModule,
@@ -44,13 +46,24 @@ object BlockPlacementUtils {
      * Minecraft client couldn't place there either in that case.
      */
     fun findReferenceBlock(session: GameSession, pos: Vector3i): Pair<Vector3i, Int>? {
+        // Prefer a neighbor we can positively confirm is solid. Sending blockDefinition as
+        // "minecraft:unknown" for an untracked neighbor gets the whole transaction rejected by
+        // the server (confirmed via [AutoPlaceLog] - a real attempt with blockDefinition=unknown
+        // never resulted in a placed block), since the server validates that field against its
+        // own real world state. Only fall back to an unconfirmed guess - still worth trying, it
+        // might happen to be right - if nothing around pos is actually known.
+        var fallback: Pair<Vector3i, Int>? = null
         for ((normal, face) in FACES) {
             val neighbor = pos.add(-normal.x, -normal.y, -normal.z)
-            if (session.level.getBlockAt(neighbor).identifier != "minecraft:air") {
+            val identifier = session.level.getBlockAt(neighbor).identifier
+            if (identifier != "minecraft:air" && identifier != "minecraft:unknown") {
                 return neighbor to face
             }
+            if (identifier == "minecraft:unknown" && fallback == null) {
+                fallback = neighbor to face
+            }
         }
-        return null
+        return fallback
     }
 
     /**
@@ -92,6 +105,31 @@ object BlockPlacementUtils {
             hotbarSlot,
             current,
             afterUse
+        )
+    }
+
+    /**
+     * Sends [packet] and unconditionally logs it via PacketDebugLog (shown as [AutoPlaceLog] in
+     * chat when PacketLoggerModule is enabled) - use this instead of calling
+     * session.serverBound(packet) directly for placement transactions, so it's always possible to
+     * tell "nothing is being sent" apart from "something is being sent and rejected" by the
+     * server.
+     */
+    fun sendAndLog(session: GameSession, packet: InventoryTransactionPacket) {
+        session.serverBound(packet)
+        PacketDebugLog.log(
+            session,
+            "AutoPlaceLog",
+            buildString {
+                append("blockPosition: ${packet.blockPosition}\n")
+                append("blockFace: ${packet.blockFace}\n")
+                append("blockDefinition: ${packet.blockDefinition}\n")
+                append("clickPosition: ${packet.clickPosition}\n")
+                append("playerPosition: ${packet.playerPosition}\n")
+                append("hotbarSlot: ${packet.hotbarSlot}\n")
+                append("itemInHand: ${packet.itemInHand}\n")
+                append("actions: ${packet.actions}")
+            }
         )
     }
 
