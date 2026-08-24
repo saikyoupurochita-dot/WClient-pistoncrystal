@@ -47,7 +47,6 @@ class PlayerInventory(private val player: LocalPlayer) : EntityInventory(player)
     fun predictHeldItemSlot(slot: Int) {
         heldItemSlot = slot
     }
-        private set
 
     private var requestId = -1
     private val requestIdMap = mutableMapOf<Int, Int>()
