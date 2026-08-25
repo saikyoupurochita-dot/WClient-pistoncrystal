@@ -88,10 +88,10 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
                 val cellDump = DIRECTIONS.joinToString(" | ") { dir ->
                     val cellPos = currentPos.add(dir.x, dir.y, dir.z)
                     val cellId = session.level.getBlockAt(cellPos).identifier
-                    "($dir):cell=$cellId,canPlace=${canPlaceAt(cellPos)}"
+                    "($dir)abs=($cellPos):cell=$cellId,canPlace=${canPlaceAt(cellPos)}"
                 }
                 session.displayClientMessage(
-                    "§b[SurroundDiag] placeList size=${placeList.size}, airPlace=$airPlace, obsidianSlot=$obsidianSlot\n$cellDump"
+                    "§b[SurroundDiag] playerPos=$currentPos, placeList size=${placeList.size}, airPlace=$airPlace, obsidianSlot=$obsidianSlot\n$cellDump"
                 )
             }
         }
@@ -214,8 +214,8 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
             blockDefinition = BlockPlacementUtils.referenceBlockDefinition(session, refPos)
             actions.add(BlockPlacementUtils.consumeItemAction(slot, heldItem))
         }
-        session.serverBound(packet)
-        // Deliberately NOT calling BlockPlacementUtils.predictLocalBlockChange() here (unlike
+        BlockPlacementUtils.sendAndLog(session, packet)
+        // NOT calling BlockPlacementUtils.predictLocalBlockChange() here (unlike
         // PistonCrystalModule, which needs it for its piston->crystal->redstone sequencing).
         // Surround recomputes its whole ring from scratch every tick anyway, so there's no
         // sequencing need for an immediate local update - and doing it unconditionally caused a
