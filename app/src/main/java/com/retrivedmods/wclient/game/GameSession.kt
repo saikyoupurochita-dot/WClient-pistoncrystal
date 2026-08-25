@@ -115,10 +115,12 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                     // the block it's told to place doesn't match the item actually being used.
                     // The server's own palette is *always* correct for whatever version it's running,
                     // so this can never go stale the way the bundled files do.
+                    var blockMappingSource = "none"
                     val livePalette = extractBlockPaletteFromStartGame(packet)
                     if (livePalette != null) {
                         try {
                             blockMapping = BlockMapping.fromPalette(livePalette)
+                            blockMappingSource = "live (${livePalette.size} palette entries)"
                             Log.i("GameSession", "Loaded block mapping from the server's own StartGamePacket palette (${livePalette.size} entries)")
                         } catch (e: Exception) {
                             Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
@@ -130,6 +132,7 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                     try {
                         if (!isBlockMappingInitialized) {
                             blockMapping = blockMappingProvider.craftMapping(protocolVersion)
+                            blockMappingSource = "bundled asset (protocol $protocolVersion)"
                         }
                         itemMapping = itemMappingProvider.craftMapping(protocolVersion)
 
@@ -156,6 +159,24 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                         } catch (e: Exception) {
                             Log.e("GameSession", "Failed to set up codecHelper blockDefinitions", e)
                         }
+                    }
+
+                    // Chat-visible sanity check (no logcat needed): if the block mapping's runtime
+                    // ids actually line up with what the server sent, looking up a few extremely
+                    // common identifiers must resolve to themselves. If BlockMapping.fromPalette's
+                    // hash disagreed with the server's own hash (the bug this comment sits next to
+                    // was written to fix), this line would previously have nothing useful to show -
+                    // getRuntimeIdByIdentifier would still "succeed" (it just linear-scans our own
+                    // possibly-wrong map for a matching name), so the real tell was always blocks
+                    // read back as minecraft:unknown / an item's own embedded block definition
+                    // decoding as something unrelated (see BlockMapping.fromPalette's doc). Shown
+                    // once per connection so it doesn't spam chat.
+                    if (isBlockMappingInitialized) {
+                        displayClientMessage(
+                            "§b[BlockMappingCheck] §fsource=$blockMappingSource, entries=${blockMapping.size}, " +
+                                "obsidian runtimeId=${blockMapping.getRuntimeIdByIdentifier("minecraft:obsidian")}, " +
+                                "air runtimeId=${blockMapping.airId}"
+                        )
                     }
                 }
             }
