@@ -32,6 +32,22 @@ class PlayerInventory(private val player: LocalPlayer) : EntityInventory(player)
     var heldItemSlot = 0
         private set
 
+    /**
+     * Modules that switch the hotbar slot themselves (Surround, PistonCrystal, ...) via
+     * session.serverBound(PlayerHotbarPacket) need to call this right after, since that send
+     * bypasses the normal interception pipeline entirely (see GameSession/WRelaySession) - the
+     * only place heldItemSlot otherwise gets updated is by observing the real client's own
+     * traffic passing through there. Without calling this, heldItemSlot silently never changes,
+     * so `hand` (= content[heldItemSlot]) keeps pointing at whatever was selected before the
+     * module ran - which then mismatches the hotbarSlot in every placement packet the module
+     * sends, and gets the whole transaction rejected by any server that validates inventory
+     * state. This predicts the same way a real client's own selection updates immediately,
+     * without waiting on a round trip.
+     */
+    fun predictHeldItemSlot(slot: Int) {
+        heldItemSlot = slot
+    }
+
     private var requestId = -1
     private val requestIdMap = mutableMapOf<Int, Int>()
     private val pendingRequests = LinkedList<ItemStackRequest>()

@@ -44,20 +44,49 @@ class BlockMapping(
     companion object {
         /**
          * Builds a BlockMapping straight from the server's own StartGamePacket block palette,
-         * instead of a bundled per-version asset file. Each entry's position in [palette] is its
-         * runtime id (the modern Bedrock convention, since explicit per-entry runtime ids were
-         * removed from the palette format) - unless the entry itself still carries an explicit
-         * "runtimeId" tag (older-style palette), which takes priority when present.
+         * instead of a bundled per-version asset file.
+         *
+         * The runtime id is NOT simply an entry's position in [palette] as sent by the server
+         * (that was our original, wrong assumption here), nor does BlockPropertyData carry an
+         * explicit runtime id field at all (confirmed against the real bedrock-codec source -
+         * it's just `name: String` + `properties: NbtMap`). Since Minecraft 1.18.30, the real
+         * runtime id assignment is: sort every block identifier by its FNV-1a 64-bit hash, then
+         * assign sequential ids 0, 1, 2... in THAT sorted order. This is a real, documented
+         * Bedrock protocol algorithm (see https://gist.github.com/SupremeMortal/5e09c8b0eb6b3a30439b317b875bc29c),
+         * confirmed against ProtoHax's own working BlockMapping (HashedPaletteComparator) - not
+         * something invented here. Getting this wrong means every single runtime id lookup is
+         * silently wrong, which would explain every block reading back as "unknown".
          */
-        fun fromPalette(palette: List<NbtMap>): BlockMapping {
+        fun fromPalette(palette: List<org.cloudburstmc.protocol.bedrock.data.BlockPropertyData>): BlockMapping {
             val runtimeToBlock = mutableMapOf<Int, BlockDefinition>()
-            palette.forEachIndexed { index, entry ->
-                val name = entry.getString("name", null) ?: return@forEachIndexed
-                val explicitRuntimeId = entry.getInt("runtimeId", Int.MIN_VALUE)
-                val runtime = if (explicitRuntimeId != Int.MIN_VALUE) explicitRuntimeId else index
-                runtimeToBlock[runtime] = BlockDefinition(runtime, name)
-            }
+            palette
+                .sortedWith(compareBy(FnvHashComparator) { it.name })
+                .forEachIndexed { index, entry ->
+                    runtimeToBlock[index] = BlockDefinition(index, entry.name)
+                }
             return BlockMapping(runtimeToBlock)
+        }
+
+        /**
+         * FNV-1a 64-bit hash comparator for block identifier strings, matching the real Bedrock
+         * palette-ordering algorithm (see fromPalette() above). Compared as unsigned 64-bit values.
+         */
+        private object FnvHashComparator : Comparator<String> {
+            private const val FNV1_64_INIT = -0x340d631b7bdddcdbL
+            private const val FNV1_PRIME_64 = 1099511628211L
+
+            override fun compare(a: String, b: String): Int {
+                return java.lang.Long.compareUnsigned(hash(a), hash(b))
+            }
+
+            private fun hash(value: String): Long {
+                var hash = FNV1_64_INIT
+                for (byte in value.toByteArray(Charsets.UTF_8)) {
+                    hash *= FNV1_PRIME_64
+                    hash = hash xor (byte.toInt() and 0xff).toLong()
+                }
+                return hash
+            }
         }
 
         fun read(context: Context, version: Short): BlockMapping {

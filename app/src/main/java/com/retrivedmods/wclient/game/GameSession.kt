@@ -71,6 +71,22 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
     }
 
     private fun handlePacketBound(packet: BedrockPacket, isClientBound: Boolean): Boolean {
+        if (!isClientBound && packet is org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket) {
+            // Force-disable blob (chunk) caching support. WClient has no equivalent to
+            // ProtoHax's BlobCacheManager (async cache-miss/callback infrastructure via
+            // session.scope/cacheManager, which we don't have) - implementing that properly is a
+            // real undertaking. Telling the server the client doesn't support blob caching is the
+            // much simpler fix ProtoHax itself once used (see the commented-out block in its own
+            // BlobCacheManager.kt) before building the full version: the server then always sends
+            // complete inline chunk/subchunk data instead of empty-payload-plus-separate-blob-
+            // fetch, which our existing LevelChunkPacket/SubChunkPacket parsing already handles.
+            // If the server was using blob caching, this is very likely why every block read back
+            // as "unknown" no matter what else got fixed - SubChunkData.data was always empty and
+            // we had nothing to fall back to.
+            packet.isSupported = false
+            Log.i("GameSession", "Disabled client blob cache support (ClientCacheStatusPacket) so the server sends full chunk data instead of cache-miss blobs we can't fetch")
+        }
+
         when (packet) {
             is StartGamePacket -> {
                 try {
@@ -108,7 +124,7 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                             Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
                         }
                     } else {
-                        Log.w("GameSession", "Could not find a block palette on StartGamePacket (tried: getBlockPalette/blockPalette/getBlockProperties/blockProperties) - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
+                        Log.w("GameSession", "StartGamePacket.blockProperties was empty - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
                     }
 
                     try {
@@ -215,22 +231,18 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
      * reflection means a wrong guess here just falls through to the next candidate (or the bundled
      * asset fallback) instead of breaking the build.
      */
-    private fun extractBlockPaletteFromStartGame(packet: StartGamePacket): List<org.cloudburstmc.nbt.NbtMap>? {
-        val candidates = listOf("getBlockPalette", "blockPalette", "getBlockProperties", "blockProperties")
-        for (name in candidates) {
-            try {
-                val method = packet.javaClass.getMethod(name)
-                val result = method.invoke(packet)
-                @Suppress("UNCHECKED_CAST")
-                val list = result as? List<org.cloudburstmc.nbt.NbtMap> ?: continue
-                if (list.isNotEmpty()) return list
-            } catch (e: NoSuchMethodException) {
-                // try the next candidate name
-            } catch (e: Exception) {
-                Log.w("GameSession", "Found StartGamePacket.$name() but couldn't read it as a block palette", e)
-            }
-        }
-        return null
+    /**
+     * Reads the server's own block palette directly off StartGamePacket. Confirmed via the real
+     * bedrock-codec source: the field is `blockProperties: List<BlockPropertyData>` (not the
+     * NbtMap list this code originally guessed at and reflection-searched several possible names
+     * for) - each entry has a plain `.name: String` and `.properties: NbtMap`, no runtimeId field
+     * at all. No more reflection/guessing needed now that this is confirmed.
+     */
+    private fun extractBlockPaletteFromStartGame(
+        packet: StartGamePacket
+    ): List<org.cloudburstmc.protocol.bedrock.data.BlockPropertyData>? {
+        val list = packet.blockProperties
+        return list.takeIf { it.isNotEmpty() }
     }
 
 }
