@@ -173,10 +173,15 @@ class Level(val session: GameSession) {
                 val center = packet.centerPosition
                 packet.subChunks.forEach { subChunkData ->
                     try {
-                        // Only bother parsing entries that actually carry block data. We don't
-                        // depend on the exact SubChunkRequestResult enum name/value here (its
-                        // constants weren't confirmed) - an empty/absent buffer is a reliable
-                        // enough signal that there's nothing to parse for this one.
+                        // Matches ProtoHax's own (confirmed working) SubChunkPacket handling:
+                        // only accept entries the server explicitly marked SUCCESS. Our previous
+                        // "readableBytes() <= 0" heuristic wasn't equivalent - a non-SUCCESS
+                        // result (e.g. chunk not found) could still carry a non-empty buffer we'd
+                        // have wrongly tried to parse as real block data.
+                        if (subChunkData.result != org.cloudburstmc.protocol.bedrock.data.SubChunkRequestResult.SUCCESS) {
+                            return@forEach
+                        }
+
                         val data = subChunkData.data ?: return@forEach
                         if (data.readableBytes() <= 0) return@forEach
 
@@ -188,7 +193,8 @@ class Level(val session: GameSession) {
                         // plain 0-based array, so for a 384-world (24 sections, floor at y=-64) we
                         // shift by +4 to land the lowest legal signed index (-4) on array index 0.
                         // For the classic 256-world (16 sections, y starts at 0) signed indices are
-                        // already 0-based, so no shift is needed.
+                        // already 0-based, so no shift is needed. (Matches ProtoHax's own
+                        // `it.position.add(centerPos).add(0, 4, 0)` - same formula, confirmed.)
                         val sectionIndex = (center.y + offset.y) + (if (is384WorldSupported) 4 else 0)
 
                         val chunk = chunks.getOrPut(Chunk.hash(chunkX, chunkZ)) {
