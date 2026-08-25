@@ -108,7 +108,7 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                             Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
                         }
                     } else {
-                        Log.w("GameSession", "Could not find a block palette on StartGamePacket (tried: getBlockPalette/blockPalette/getBlockProperties/blockProperties) - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
+                        Log.w("GameSession", "StartGamePacket.blockProperties was empty - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
                     }
 
                     try {
@@ -215,22 +215,18 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
      * reflection means a wrong guess here just falls through to the next candidate (or the bundled
      * asset fallback) instead of breaking the build.
      */
-    private fun extractBlockPaletteFromStartGame(packet: StartGamePacket): List<org.cloudburstmc.nbt.NbtMap>? {
-        val candidates = listOf("getBlockPalette", "blockPalette", "getBlockProperties", "blockProperties")
-        for (name in candidates) {
-            try {
-                val method = packet.javaClass.getMethod(name)
-                val result = method.invoke(packet)
-                @Suppress("UNCHECKED_CAST")
-                val list = result as? List<org.cloudburstmc.nbt.NbtMap> ?: continue
-                if (list.isNotEmpty()) return list
-            } catch (e: NoSuchMethodException) {
-                // try the next candidate name
-            } catch (e: Exception) {
-                Log.w("GameSession", "Found StartGamePacket.$name() but couldn't read it as a block palette", e)
-            }
-        }
-        return null
+    /**
+     * Reads the server's own block palette directly off StartGamePacket. Confirmed via the real
+     * bedrock-codec source: the field is `blockProperties: List<BlockPropertyData>` (not the
+     * NbtMap list this code originally guessed at and reflection-searched several possible names
+     * for) - each entry has a plain `.name: String` and `.properties: NbtMap`, no runtimeId field
+     * at all. No more reflection/guessing needed now that this is confirmed.
+     */
+    private fun extractBlockPaletteFromStartGame(
+        packet: StartGamePacket
+    ): List<org.cloudburstmc.protocol.bedrock.data.BlockPropertyData>? {
+        val list = packet.blockProperties
+        return list.takeIf { it.isNotEmpty() }
     }
 
 }
