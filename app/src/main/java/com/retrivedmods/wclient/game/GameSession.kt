@@ -71,6 +71,22 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
     }
 
     private fun handlePacketBound(packet: BedrockPacket, isClientBound: Boolean): Boolean {
+        if (!isClientBound && packet is org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket) {
+            // Force-disable blob (chunk) caching support. WClient has no equivalent to
+            // ProtoHax's BlobCacheManager (async cache-miss/callback infrastructure via
+            // session.scope/cacheManager, which we don't have) - implementing that properly is a
+            // real undertaking. Telling the server the client doesn't support blob caching is the
+            // much simpler fix ProtoHax itself once used (see the commented-out block in its own
+            // BlobCacheManager.kt) before building the full version: the server then always sends
+            // complete inline chunk/subchunk data instead of empty-payload-plus-separate-blob-
+            // fetch, which our existing LevelChunkPacket/SubChunkPacket parsing already handles.
+            // If the server was using blob caching, this is very likely why every block read back
+            // as "unknown" no matter what else got fixed - SubChunkData.data was always empty and
+            // we had nothing to fall back to.
+            packet.isSupported = false
+            Log.i("GameSession", "Disabled client blob cache support (ClientCacheStatusPacket) so the server sends full chunk data instead of cache-miss blobs we can't fetch")
+        }
+
         when (packet) {
             is StartGamePacket -> {
                 try {
