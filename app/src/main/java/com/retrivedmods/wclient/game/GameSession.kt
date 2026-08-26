@@ -124,9 +124,11 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                             Log.i("GameSession", "Loaded block mapping from the server's own StartGamePacket palette (${livePalette.size} entries)")
                         } catch (e: Exception) {
                             Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
+                            displayClientMessage("§c[BlockMappingCheck] live palette build FAILED: ${e.javaClass.simpleName}: ${e.message}")
                         }
                     } else {
                         Log.w("GameSession", "StartGamePacket.blockProperties was empty - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
+                        displayClientMessage("§e[BlockMappingCheck] StartGamePacket.blockProperties was empty/null - no live palette to use")
                     }
 
                     try {
@@ -139,6 +141,7 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                         Log.i("GameSession", "Loaded mappings for protocol $protocolVersion")
                     } catch (e: Exception) {
                         Log.e("GameSession", "Failed to load mappings for protocol $protocolVersion", e)
+                        displayClientMessage("§c[BlockMappingCheck] bundled-asset fallback ALSO FAILED: ${e.javaClass.simpleName}: ${e.message}")
                     }
 
                     // CRITICAL: codecHelper.blockDefinitions was never being set (only
@@ -177,6 +180,13 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                                 "obsidian runtimeId=${blockMapping.getRuntimeIdByIdentifier("minecraft:obsidian")}, " +
                                 "air runtimeId=${blockMapping.airId}"
                         )
+                    } else {
+                        // Both the live-palette and bundled-asset paths above threw (each already
+                        // reported its own error above) - blockMapping was never assigned at all,
+                        // so codecHelper.blockDefinitions below is skipped too. This is the one
+                        // case that would otherwise fail completely silently from the chat's point
+                        // of view (Log.e alone is invisible without adb/Android Studio).
+                        displayClientMessage("§c[BlockMappingCheck] blockMapping was NEVER initialized - see the FAILED message(s) above")
                     }
                 }
             }
