@@ -70,7 +70,21 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
         return handlePacketBound(packet, isClientBound = false)
     }
 
+    private var earlyPacketDiagCount = 0
+
     private fun handlePacketBound(packet: BedrockPacket, isClientBound: Boolean): Boolean {
+        // TEMPORARY: prints the class name of the first 15 packets seen through this method at
+        // all, unconditionally, before anything else can possibly swallow/skip it. If
+        // StartGamePacket never shows up here, handlePacketBound either isn't wired up as the
+        // actual packet listener anymore, or StartGamePacket specifically never reaches it.
+        if (earlyPacketDiagCount < 15) {
+            earlyPacketDiagCount++
+            val direction = if (isClientBound) "S->C" else "C->S"
+            runCatching {
+                displayClientMessage("§6[PacketFlowDiag] #$earlyPacketDiagCount $direction ${packet.javaClass.simpleName}")
+            }
+        }
+
         if (!isClientBound && packet is org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket) {
             // Force-disable blob (chunk) caching support. WClient has no equivalent to
             // ProtoHax's BlobCacheManager (async cache-miss/callback infrastructure via
