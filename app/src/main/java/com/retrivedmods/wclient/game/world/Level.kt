@@ -63,6 +63,8 @@ class Level(val session: GameSession) {
      * every other gap in this tracking (unloaded chunks, servers that don't use this feature).
      */
     private val pendingCacheBlobs = ConcurrentHashMap<Long, Pair<Long, Int>>() // blobId -> (chunkHash, sectionIndex); sectionIndex == -1 means "biome blob, ignore"
+    private var levelChunkDiagCount = 0
+    private var subChunkDiagCount = 0
 
     var is384WorldSupported = false
         private set
@@ -100,6 +102,15 @@ class Level(val session: GameSession) {
                     return
                 }
 
+                if (levelChunkDiagCount < 5) {
+                    levelChunkDiagCount++
+                    session.displayClientMessage(
+                        "§a[ChunkDiag] #$levelChunkDiagCount LevelChunkPacket (${packet.chunkX},${packet.chunkZ}) " +
+                            "isCachingEnabled=${packet.isCachingEnabled} isRequestSubChunks=${packet.isRequestSubChunks} " +
+                            "subChunksLength=${packet.subChunksLength} data.readableBytes=${packet.data.readableBytes()}"
+                    )
+                }
+
                 val chunk = Chunk(packet.chunkX, packet.chunkZ, is384WorldSupported, session.blockMapping)
                 try {
                     if (packet.isCachingEnabled) {
@@ -128,6 +139,9 @@ class Level(val session: GameSession) {
                     // sections to.
                     chunks[chunk.hash] = chunk
                 } catch (e: Exception) {
+                    if (levelChunkDiagCount <= 5) {
+                        session.displayClientMessage("§c[ChunkDiag] LevelChunkPacket parse FAILED: ${e.javaClass.simpleName}: ${e.message}")
+                    }
                     // malformed/unexpected chunk data for this protocol version - skip it rather
                     // than crash the relay
                 }
@@ -173,6 +187,15 @@ class Level(val session: GameSession) {
                 val center = packet.centerPosition
                 packet.subChunks.forEach { subChunkData ->
                     try {
+                        if (subChunkDiagCount < 8) {
+                            subChunkDiagCount++
+                            session.displayClientMessage(
+                                "§a[ChunkDiag] #$subChunkDiagCount SubChunk result=${subChunkData.result} " +
+                                    "dataBytes=${subChunkData.data?.readableBytes() ?: -1} " +
+                                    "center=(${center.x},${center.y},${center.z}) offset=${subChunkData.position}"
+                            )
+                        }
+
                         // Matches ProtoHax's own (confirmed working) SubChunkPacket handling:
                         // only accept entries the server explicitly marked SUCCESS. Our previous
                         // "readableBytes() <= 0" heuristic wasn't equivalent - a non-SUCCESS
@@ -204,6 +227,9 @@ class Level(val session: GameSession) {
                         val buf = data.duplicate()
                         chunk.readSubChunk(sectionIndex, buf)
                     } catch (e: Exception) {
+                        if (subChunkDiagCount <= 8) {
+                            session.displayClientMessage("§c[ChunkDiag] SubChunk parse FAILED: ${e.javaClass.simpleName}: ${e.message}")
+                        }
                         // same reasoning as the LevelChunkPacket catch above - skip, don't crash
                     }
                 }
