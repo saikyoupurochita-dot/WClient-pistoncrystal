@@ -67,6 +67,7 @@ class Level(val session: GameSession) {
     private var subChunkDiagCount = 0
 
     var is384WorldSupported = false
+    private var versionSupports384World = false
         private set
 
     var viewDistance = -1
@@ -86,13 +87,21 @@ class Level(val session: GameSession) {
                 playerMap.clear()
                 chunks.clear()
 
-                is384WorldSupported = try {
+                versionSupports384World = try {
                     // 384 height world was introduced in Minecraft 1.18
                     val parts = packet.vanillaVersion.split(".")
                     parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
                 } catch (e: Exception) {
                     true
                 }
+                // See the ChangeDimensionPacket comment below for why this needs the current
+                // dimension too, not just the game version. StartGamePacket usually carries the
+                // player's spawn dimension itself (e.g. spawning directly into the Nether via a
+                // portal-linked join) - check for it here so that case is handled correctly too,
+                // not just later dimension switches. Falls back to assuming Overworld (0) if this
+                // particular property name isn't found (see readIntPropertyViaReflection's doc).
+                val startDimensionId = readIntPropertyViaReflection(packet, listOf("getPlayerDimensionId", "playerDimensionId", "getDimensionId", "dimensionId"))
+                is384WorldSupported = versionSupports384World && (startDimensionId == null || startDimensionId == 0)
             }
 
             is LevelChunkPacket -> {
@@ -107,7 +116,8 @@ class Level(val session: GameSession) {
                     session.displayClientMessage(
                         "§a[ChunkDiag] #$levelChunkDiagCount LevelChunkPacket (${packet.chunkX},${packet.chunkZ}) " +
                             "isCachingEnabled=${packet.isCachingEnabled} isRequestSubChunks=${packet.isRequestSubChunks} " +
-                            "subChunksLength=${packet.subChunksLength} data.readableBytes=${packet.data.readableBytes()}"
+                            "subChunksLength=${packet.subChunksLength} data.readableBytes=${packet.data.readableBytes()} " +
+                            "is384WorldSupported=$is384WorldSupported"
                     )
                 }
 
@@ -267,6 +277,28 @@ class Level(val session: GameSession) {
 
             is ChangeDimensionPacket -> {
                 chunks.clear()
+                // Nether (dimension 1) has always been 128-height (8 sections, y0-127) - the
+                // "caves and cliffs" 384-height extension only ever applied to the Overworld
+                // (dimension 0); The End (dimension 2) is 256-height (16 sections). Recomputing
+                // this here (not just once from the game version at StartGamePacket time) matters
+                // because a version-only check stays permanently wrong for any session that ever
+                // visits the Nether - every block read there would look up the wrong section
+                // index (getBlockAt would add the 384-world's +64 Y offset to a coordinate space
+                // that never had one), landing on an unwritten section and reading back
+                // "minecraft:unknown" for genuinely real, already-loaded blocks.
+                //
+                // Reflection here (rather than packet.dimensionId directly) because that exact
+                // property name on this specific bedrock-codec version hasn't been confirmed
+                // against source - same reasoning as GameSession's extractBlockPaletteFromStartGame.
+                // A wrong guess just leaves is384WorldSupported at its version-only value instead
+                // of breaking the build.
+                val dimensionId = readIntPropertyViaReflection(packet, listOf("getDimensionId", "dimensionId", "getDimension"))
+                if (dimensionId != null) {
+                    is384WorldSupported = versionSupports384World && dimensionId == 0
+                }
+                session.displayClientMessage(
+                    "§d[DimensionDiag] ChangeDimension dimensionId=$dimensionId -> is384WorldSupported=$is384WorldSupported"
+                )
             }
 
             is AddEntityPacket -> {
@@ -434,6 +466,23 @@ class Level(val session: GameSession) {
             val neighborPos = Vector3i.from(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z)
             if (!isAir(neighborPos)) {
                 return neighborPos to face
+            }
+        }
+        return null
+    }
+
+    /** Tries each candidate no-arg method name in order, returning the first one that exists and returns an Int. */
+    private fun readIntPropertyViaReflection(target: Any, candidates: List<String>): Int? {
+        for (name in candidates) {
+            try {
+                val method = target.javaClass.getMethod(name)
+                val result = method.invoke(target)
+                if (result is Int) return result
+                if (result is Byte) return result.toInt()
+            } catch (e: NoSuchMethodException) {
+                // try the next candidate name
+            } catch (e: Exception) {
+                // found the method but couldn't read it as an int - try the next candidate
             }
         }
         return null
