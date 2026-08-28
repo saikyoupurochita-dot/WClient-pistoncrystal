@@ -68,6 +68,7 @@ class Level(val session: GameSession) {
 
     var is384WorldSupported = false
     private var versionSupports384World = false
+    private var lastSeenVanillaVersion = ""
         private set
 
     var viewDistance = -1
@@ -94,14 +95,22 @@ class Level(val session: GameSession) {
                 } catch (e: Exception) {
                     true
                 }
+                lastSeenVanillaVersion = packet.vanillaVersion
                 // See the ChangeDimensionPacket comment below for why this needs the current
                 // dimension too, not just the game version. StartGamePacket usually carries the
                 // player's spawn dimension itself (e.g. spawning directly into the Nether via a
                 // portal-linked join) - check for it here so that case is handled correctly too,
                 // not just later dimension switches. Falls back to assuming Overworld (0) if this
                 // particular property name isn't found (see readIntPropertyViaReflection's doc).
-                val startDimensionId = readIntPropertyViaReflection(packet, listOf("getPlayerDimensionId", "playerDimensionId", "getDimensionId", "dimensionId"))
-                is384WorldSupported = versionSupports384World && (startDimensionId == null || startDimensionId == 0)
+                // NOTE: originally also tried reading a dimension id off StartGamePacket via
+                // reflection here to double check the "we start in the Overworld" assumption -
+                // reverted that. It came back is384WorldSupported=false for a player confirmed to
+                // be in the Overworld, meaning one of the guessed method names matched something
+                // real but unrelated (not an actual dimension id) and threw this off. Simpler and
+                // now confirmed-correct: assume Overworld at connect time (true in the vast
+                // majority of cases - a join mid-Nether would need a ChangeDimensionPacket to have
+                // gotten there anyway, which the case below already corrects for).
+                is384WorldSupported = versionSupports384World
             }
 
             is LevelChunkPacket -> {
@@ -117,7 +126,7 @@ class Level(val session: GameSession) {
                         "§a[ChunkDiag] #$levelChunkDiagCount LevelChunkPacket (${packet.chunkX},${packet.chunkZ}) " +
                             "isCachingEnabled=${packet.isCachingEnabled} isRequestSubChunks=${packet.isRequestSubChunks} " +
                             "subChunksLength=${packet.subChunksLength} data.readableBytes=${packet.data.readableBytes()} " +
-                            "is384WorldSupported=$is384WorldSupported"
+                            "is384WorldSupported=$is384WorldSupported vanillaVersion='$lastSeenVanillaVersion'"
                     )
                 }
 
