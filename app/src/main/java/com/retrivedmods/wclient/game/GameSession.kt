@@ -43,29 +43,6 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
 
     private var startGameReceived = false
 
-    // Chat messages sent from inside the StartGamePacket handler (or anything else running that
-    // early in the connection) go nowhere - the RakNet session isn't "spawned" enough yet for the
-    // client to actually display an injected TextPacket, so displayClientMessage() calls there
-    // fail completely silently (confirmed via PacketFlowDiag: messages #1-11, everything up to
-    // and including StartGamePacket's own handler, never appeared in chat at all; #12 onward,
-    // once real post-spawn packets like ItemComponentPacket started flowing, worked fine). Queue
-    // messages here instead of sending them immediately, and flush the queue once we know chat
-    // delivery works (see flushPendingDiagnostics(), called from the first PlayerAuthInputPacket -
-    // the same packet type all the *Diag modules already successfully print through).
-    private val pendingDiagnostics = mutableListOf<String>()
-    private var pendingDiagnosticsFlushed = false
-
-    private fun queueDiagnostic(message: String) {
-        pendingDiagnostics.add(message)
-    }
-
-    private fun flushPendingDiagnostics() {
-        if (pendingDiagnosticsFlushed) return
-        pendingDiagnosticsFlushed = true
-        pendingDiagnostics.forEach { displayClientMessage(it) }
-        pendingDiagnostics.clear()
-    }
-
     fun clientBound(packet: BedrockPacket) {
         wRelaySession.clientBound(packet)
     }
@@ -93,21 +70,7 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
         return handlePacketBound(packet, isClientBound = false)
     }
 
-    private var earlyPacketDiagCount = 0
-
     private fun handlePacketBound(packet: BedrockPacket, isClientBound: Boolean): Boolean {
-        // TEMPORARY: prints the class name of the first 15 packets seen through this method at
-        // all, unconditionally, before anything else can possibly swallow/skip it. If
-        // StartGamePacket never shows up here, handlePacketBound either isn't wired up as the
-        // actual packet listener anymore, or StartGamePacket specifically never reaches it.
-        if (earlyPacketDiagCount < 15) {
-            earlyPacketDiagCount++
-            val direction = if (isClientBound) "S->C" else "C->S"
-            runCatching {
-                queueDiagnostic("§6[PacketFlowDiag] #$earlyPacketDiagCount $direction ${packet.javaClass.simpleName}")
-            }
-        }
-
         if (!isClientBound && packet is org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket) {
             // Force-disable blob (chunk) caching support. WClient has no equivalent to
             // ProtoHax's BlobCacheManager (async cache-miss/callback infrastructure via
@@ -122,10 +85,6 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
             // we had nothing to fall back to.
             packet.isSupported = false
             Log.i("GameSession", "Disabled client blob cache support (ClientCacheStatusPacket) so the server sends full chunk data instead of cache-miss blobs we can't fetch")
-        }
-
-        if (packet is org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket) {
-            flushPendingDiagnostics()
         }
 
         when (packet) {
@@ -165,11 +124,9 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                             Log.i("GameSession", "Loaded block mapping from the server's own StartGamePacket palette (${livePalette.size} entries)")
                         } catch (e: Exception) {
                             Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
-                            queueDiagnostic("§c[BlockMappingCheck] live palette build FAILED: ${e.javaClass.simpleName}: ${e.message}")
                         }
                     } else {
                         Log.w("GameSession", "StartGamePacket.blockProperties was empty - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
-                        queueDiagnostic("§e[BlockMappingCheck] StartGamePacket.blockProperties was empty/null - no live palette to use")
                     }
 
                     try {
@@ -182,7 +139,6 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                         Log.i("GameSession", "Loaded mappings for protocol $protocolVersion")
                     } catch (e: Exception) {
                         Log.e("GameSession", "Failed to load mappings for protocol $protocolVersion", e)
-                        queueDiagnostic("§c[BlockMappingCheck] bundled-asset fallback ALSO FAILED: ${e.javaClass.simpleName}: ${e.message}")
                     }
 
                     // CRITICAL: codecHelper.blockDefinitions was never being set (only
@@ -216,18 +172,11 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                     // decoding as something unrelated (see BlockMapping.fromPalette's doc). Shown
                     // once per connection so it doesn't spam chat.
                     if (isBlockMappingInitialized) {
-                        queueDiagnostic(
+                        displayClientMessage(
                             "§b[BlockMappingCheck] §fsource=$blockMappingSource, entries=${blockMapping.size}, " +
                                 "obsidian runtimeId=${blockMapping.getRuntimeIdByIdentifier("minecraft:obsidian")}, " +
                                 "air runtimeId=${blockMapping.airId}"
                         )
-                    } else {
-                        // Both the live-palette and bundled-asset paths above threw (each already
-                        // reported its own error above) - blockMapping was never assigned at all,
-                        // so codecHelper.blockDefinitions below is skipped too. This is the one
-                        // case that would otherwise fail completely silently from the chat's point
-                        // of view (Log.e alone is invisible without adb/Android Studio).
-                        queueDiagnostic("§c[BlockMappingCheck] blockMapping was NEVER initialized - see the FAILED message(s) above")
                     }
                 }
             }
@@ -277,9 +226,6 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
         localPlayer.onDisconnect()
         level.onDisconnect()
         startGameReceived = false
-        earlyPacketDiagCount = 0
-        pendingDiagnostics.clear()
-        pendingDiagnosticsFlushed = false
 
         for (module in ModuleManager.modules) {
             module.onDisconnect(reason)
