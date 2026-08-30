@@ -90,8 +90,20 @@ class Level(val session: GameSession) {
 
                 versionSupports384World = try {
                     // 384 height world was introduced in Minecraft 1.18
-                    val parts = packet.vanillaVersion.split(".")
-                    parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
+                    val version = packet.vanillaVersion
+                    if (version.isBlank()) {
+                        // Some servers send an empty vanillaVersion string. "".split(".") returns
+                        // [""] (no exception), which then fails the parts.size >= 2 check below and
+                        // silently resolved to false - meaning every overworld chunk got read with
+                        // the wrong (pre-1.18, no -64 Y offset) section layout on any such server,
+                        // even though the actual world was almost certainly modern. Treat unknown
+                        // the same as "assume current/384-capable", matching how unknown block
+                        // state elsewhere in this file defaults to permissive rather than blocking.
+                        true
+                    } else {
+                        val parts = version.split(".")
+                        parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
+                    }
                 } catch (e: Exception) {
                     true
                 }
