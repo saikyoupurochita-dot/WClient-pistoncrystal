@@ -157,6 +157,20 @@ class Level(val session: GameSession) {
                     // respectively), which needs a Chunk already sitting in the map to attach its
                     // sections to.
                     chunks[chunk.hash] = chunk
+
+                    if (levelChunkDiagCount <= 5 && !packet.isCachingEnabled && !packet.isRequestSubChunks) {
+                        // Sample a handful of local positions right after a successful parse, to
+                        // tell apart "chunk.read() silently produced empty/garbage data" from
+                        // "parsing is fine but something downstream (getBlockAt, blockMapping
+                        // lookup) doesn't line up with it".
+                        val sampleY = if (is384WorldSupported) 64 else 64
+                        val samples = (0..15 step 4).joinToString(" | ") { x ->
+                            val rawId = chunk.getBlockAt(x, sampleY, 0)
+                            val def = session.blockMapping.getDefinition(rawId)
+                            "x=$x:rawId=$rawId,def=${def.identifier}"
+                        }
+                        session.displayClientMessage("§d[ChunkParseCheck] chunk(${packet.chunkX},${packet.chunkZ}) y=$sampleY $samples")
+                    }
                 } catch (e: Exception) {
                     if (levelChunkDiagCount <= 5) {
                         session.displayClientMessage("§c[ChunkDiag] LevelChunkPacket parse FAILED: ${e.javaClass.simpleName}: ${e.message}")
