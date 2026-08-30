@@ -86,8 +86,20 @@ class Level(val session: GameSession) {
 
                 is384WorldSupported = try {
                     // 384 height world was introduced in Minecraft 1.18
-                    val parts = packet.vanillaVersion.split(".")
-                    parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
+                    val version = packet.vanillaVersion
+                    if (version.isBlank()) {
+                        // Some servers send an empty vanillaVersion string. "".split(".") returns
+                        // [""] (no exception), which then fails the parts.size >= 2 check below and
+                        // silently resolved to false - meaning every overworld chunk got read with
+                        // the wrong (pre-1.18, no -64 Y offset) section layout on any such server,
+                        // even though the actual world was almost certainly modern. Treat unknown
+                        // the same as "assume current/384-capable", matching how unknown block
+                        // state elsewhere in this file defaults to permissive rather than blocking.
+                        true
+                    } else {
+                        val parts = version.split(".")
+                        parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
+                    }
                 } catch (e: Exception) {
                     true
                 }
@@ -127,6 +139,20 @@ class Level(val session: GameSession) {
                     // respectively), which needs a Chunk already sitting in the map to attach its
                     // sections to.
                     chunks[chunk.hash] = chunk
+
+                    if (levelChunkDiagCount <= 5 && !packet.isCachingEnabled && !packet.isRequestSubChunks) {
+                        // Sample a handful of local positions right after a successful parse, to
+                        // tell apart "chunk.read() silently produced empty/garbage data" from
+                        // "parsing is fine but something downstream (getBlockAt, blockMapping
+                        // lookup) doesn't line up with it".
+                        val sampleY = if (is384WorldSupported) 64 else 64
+                        val samples = (0..15 step 4).joinToString(" | ") { x ->
+                            val rawId = chunk.getBlockAt(x, sampleY, 0)
+                            val def = session.blockMapping.getDefinition(rawId)
+                            "x=$x:rawId=$rawId,def=${def.identifier}"
+                        }
+                        session.displayClientMessage("§d[ChunkParseCheck] chunk(${packet.chunkX},${packet.chunkZ}) y=$sampleY $samples")
+                    }
                 } catch (e: Exception) {
                     // malformed/unexpected chunk data for this protocol version - skip it rather
                     // than crash the relay
