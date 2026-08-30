@@ -63,13 +63,8 @@ class Level(val session: GameSession) {
      * every other gap in this tracking (unloaded chunks, servers that don't use this feature).
      */
     private val pendingCacheBlobs = ConcurrentHashMap<Long, Pair<Long, Int>>() // blobId -> (chunkHash, sectionIndex); sectionIndex == -1 means "biome blob, ignore"
-    private var levelChunkDiagCount = 0
-    private var levelChunkParseCheckCount = 0
-    private var subChunkDiagCount = 0
 
     var is384WorldSupported = false
-    private var versionSupports384World = false
-    private var lastSeenVanillaVersion = ""
         private set
 
     var viewDistance = -1
@@ -89,41 +84,13 @@ class Level(val session: GameSession) {
                 playerMap.clear()
                 chunks.clear()
 
-                versionSupports384World = try {
+                is384WorldSupported = try {
                     // 384 height world was introduced in Minecraft 1.18
-                    val version = packet.vanillaVersion
-                    if (version.isBlank()) {
-                        // Some servers send an empty vanillaVersion string. "".split(".") returns
-                        // [""] (no exception), which then fails the parts.size >= 2 check below and
-                        // silently resolved to false - meaning every overworld chunk got read with
-                        // the wrong (pre-1.18, no -64 Y offset) section layout on any such server,
-                        // even though the actual world was almost certainly modern. Treat unknown
-                        // the same as "assume current/384-capable", matching how unknown block
-                        // state elsewhere in this file defaults to permissive rather than blocking.
-                        true
-                    } else {
-                        val parts = version.split(".")
-                        parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
-                    }
+                    val parts = packet.vanillaVersion.split(".")
+                    parts.size >= 2 && parts[0] == "1" && (parts[1].toIntOrNull() ?: 0) >= 18
                 } catch (e: Exception) {
                     true
                 }
-                lastSeenVanillaVersion = packet.vanillaVersion
-                // See the ChangeDimensionPacket comment below for why this needs the current
-                // dimension too, not just the game version. StartGamePacket usually carries the
-                // player's spawn dimension itself (e.g. spawning directly into the Nether via a
-                // portal-linked join) - check for it here so that case is handled correctly too,
-                // not just later dimension switches. Falls back to assuming Overworld (0) if this
-                // particular property name isn't found (see readIntPropertyViaReflection's doc).
-                // NOTE: originally also tried reading a dimension id off StartGamePacket via
-                // reflection here to double check the "we start in the Overworld" assumption -
-                // reverted that. It came back is384WorldSupported=false for a player confirmed to
-                // be in the Overworld, meaning one of the guessed method names matched something
-                // real but unrelated (not an actual dimension id) and threw this off. Simpler and
-                // now confirmed-correct: assume Overworld at connect time (true in the vast
-                // majority of cases - a join mid-Nether would need a ChangeDimensionPacket to have
-                // gotten there anyway, which the case below already corrects for).
-                is384WorldSupported = versionSupports384World
             }
 
             is LevelChunkPacket -> {
@@ -131,16 +98,6 @@ class Level(val session: GameSession) {
                     // shouldn't normally happen (StartGamePacket sets blockMapping before Level
                     // sees it), but guard anyway since a missing mapping would crash chunk parsing
                     return
-                }
-
-                if (levelChunkDiagCount < 5) {
-                    levelChunkDiagCount++
-                    session.displayClientMessage(
-                        "§a[ChunkDiag] #$levelChunkDiagCount LevelChunkPacket (${packet.chunkX},${packet.chunkZ}) " +
-                            "isCachingEnabled=${packet.isCachingEnabled} isRequestSubChunks=${packet.isRequestSubChunks} " +
-                            "subChunksLength=${packet.subChunksLength} data.readableBytes=${packet.data.readableBytes()} " +
-                            "is384WorldSupported=$is384WorldSupported vanillaVersion='$lastSeenVanillaVersion'"
-                    )
                 }
 
                 val chunk = Chunk(packet.chunkX, packet.chunkZ, is384WorldSupported, session.blockMapping)
@@ -170,36 +127,7 @@ class Level(val session: GameSession) {
                     // respectively), which needs a Chunk already sitting in the map to attach its
                     // sections to.
                     chunks[chunk.hash] = chunk
-
-                    if (levelChunkParseCheckCount < 5 && !packet.isCachingEnabled && !packet.isRequestSubChunks) {
-                        levelChunkParseCheckCount++
-                        // Sample a handful of local positions right after a successful parse, to
-                        // tell apart "chunk.read() silently produced empty/garbage data" from
-                        // "parsing is fine but something downstream (getBlockAt, blockMapping
-                        // lookup) doesn't line up with it". Also prints whether each sampled
-                        // section was ever actually touched by chunk.read() (populated=false means
-                        // the sample fell outside subChunksLength and is reading the section's
-                        // untouched default - always session.blockMapping.airId, never real block
-                        // data - which is a completely different problem from a populated section
-                        // returning a rawId with no matching palette entry).
-                        val sampleY = 64
-                        val sectionIndex = (if (is384WorldSupported) sampleY + 64 else sampleY) shr 4
-                        val populated = chunk.sectionStorage.getOrNull(sectionIndex)?.populated
-                        val samples = (0..15 step 4).joinToString(" | ") { x ->
-                            val rawId = chunk.getBlockAt(x, sampleY, 0)
-                            val def = session.blockMapping.getDefinition(rawId)
-                            "x=$x:rawId=$rawId,def=${def.identifier}"
-                        }
-                        session.displayClientMessage(
-                            "§d[ChunkParseCheck] chunk(${packet.chunkX},${packet.chunkZ}) y=$sampleY " +
-                                "section=$sectionIndex populated=$populated airId=${session.blockMapping.airId} " +
-                                "mappingSize=${session.blockMapping.size} $samples"
-                        )
-                    }
                 } catch (e: Exception) {
-                    if (levelChunkDiagCount <= 5) {
-                        session.displayClientMessage("§c[ChunkDiag] LevelChunkPacket parse FAILED: ${e.javaClass.simpleName}: ${e.message}")
-                    }
                     // malformed/unexpected chunk data for this protocol version - skip it rather
                     // than crash the relay
                 }
@@ -245,15 +173,6 @@ class Level(val session: GameSession) {
                 val center = packet.centerPosition
                 packet.subChunks.forEach { subChunkData ->
                     try {
-                        if (subChunkDiagCount < 8) {
-                            subChunkDiagCount++
-                            session.displayClientMessage(
-                                "§a[ChunkDiag] #$subChunkDiagCount SubChunk result=${subChunkData.result} " +
-                                    "dataBytes=${subChunkData.data?.readableBytes() ?: -1} " +
-                                    "center=(${center.x},${center.y},${center.z}) offset=${subChunkData.position}"
-                            )
-                        }
-
                         // Matches ProtoHax's own (confirmed working) SubChunkPacket handling:
                         // only accept entries the server explicitly marked SUCCESS. Our previous
                         // "readableBytes() <= 0" heuristic wasn't equivalent - a non-SUCCESS
@@ -285,9 +204,6 @@ class Level(val session: GameSession) {
                         val buf = data.duplicate()
                         chunk.readSubChunk(sectionIndex, buf)
                     } catch (e: Exception) {
-                        if (subChunkDiagCount <= 8) {
-                            session.displayClientMessage("§c[ChunkDiag] SubChunk parse FAILED: ${e.javaClass.simpleName}: ${e.message}")
-                        }
                         // same reasoning as the LevelChunkPacket catch above - skip, don't crash
                     }
                 }
@@ -325,28 +241,6 @@ class Level(val session: GameSession) {
 
             is ChangeDimensionPacket -> {
                 chunks.clear()
-                // Nether (dimension 1) has always been 128-height (8 sections, y0-127) - the
-                // "caves and cliffs" 384-height extension only ever applied to the Overworld
-                // (dimension 0); The End (dimension 2) is 256-height (16 sections). Recomputing
-                // this here (not just once from the game version at StartGamePacket time) matters
-                // because a version-only check stays permanently wrong for any session that ever
-                // visits the Nether - every block read there would look up the wrong section
-                // index (getBlockAt would add the 384-world's +64 Y offset to a coordinate space
-                // that never had one), landing on an unwritten section and reading back
-                // "minecraft:unknown" for genuinely real, already-loaded blocks.
-                //
-                // Reflection here (rather than packet.dimensionId directly) because that exact
-                // property name on this specific bedrock-codec version hasn't been confirmed
-                // against source - same reasoning as GameSession's extractBlockPaletteFromStartGame.
-                // A wrong guess just leaves is384WorldSupported at its version-only value instead
-                // of breaking the build.
-                val dimensionId = readIntPropertyViaReflection(packet, listOf("getDimensionId", "dimensionId", "getDimension"))
-                if (dimensionId != null) {
-                    is384WorldSupported = versionSupports384World && dimensionId == 0
-                }
-                session.displayClientMessage(
-                    "§d[DimensionDiag] ChangeDimension dimensionId=$dimensionId -> is384WorldSupported=$is384WorldSupported"
-                )
             }
 
             is AddEntityPacket -> {
@@ -514,23 +408,6 @@ class Level(val session: GameSession) {
             val neighborPos = Vector3i.from(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z)
             if (!isAir(neighborPos)) {
                 return neighborPos to face
-            }
-        }
-        return null
-    }
-
-    /** Tries each candidate no-arg method name in order, returning the first one that exists and returns an Int. */
-    private fun readIntPropertyViaReflection(target: Any, candidates: List<String>): Int? {
-        for (name in candidates) {
-            try {
-                val method = target.javaClass.getMethod(name)
-                val result = method.invoke(target)
-                if (result is Int) return result
-                if (result is Byte) return result.toInt()
-            } catch (e: NoSuchMethodException) {
-                // try the next candidate name
-            } catch (e: Exception) {
-                // found the method but couldn't read it as an int - try the next candidate
             }
         }
         return null
