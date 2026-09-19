@@ -33,16 +33,38 @@ class BlockStorage {
             )
         }
 
-        val paletteVersion = paletteHeader or 1 shr 1
-        val bitArrayVersion = BitArrayVersion.get(paletteVersion, true)
+        val bitsPerBlock = paletteHeader shr 1
+
+        fun readInt(): Int = if (network) VarInts.readInt(buf) else buf.readIntLE()
+
+        if (bitsPerBlock == 0) {
+            // "Uniform" layer: the entire 4096-block section is a single block, encoded as just
+            // one VarInt runtime id right after the header byte - no bit-packed word array, no
+            // palette array follows at all. This is extremely common (any fully-air or otherwise
+            // uniform section - most of the sky and plenty of underground stone), confirmed
+            // against WClient's own currently-shipping v36 chunk parser (u5/h.java, the
+            // `unsignedByte3 == 0` branch there). BitArrayVersion has no entry for bits=0, so
+            // before this fix BitArrayVersion.get(0, true) below unconditionally threw
+            // "Invalid palette version: 0" on every uniform layer - which, left uncaught,
+            // desynced (or aborted) parsing of every subsequent subchunk in the same
+            // LevelChunkPacket, which is almost certainly why block reads kept coming back
+            // minecraft:unknown (or a single stale constant runtime id) almost everywhere.
+            val uniformRuntimeId = readInt()
+            bitArray = BitArrayVersion.V1.createPalette(MAX_BLOCK_IN_SECTION)
+            // A freshly created bitArray's backing IntArray defaults every entry to 0, so a
+            // single-entry palette already means "every one of the 4096 positions resolves to
+            // this one block" with no further writes needed.
+            palette = mutableListOf(uniformRuntimeId)
+            return
+        }
+
+        val bitArrayVersion = BitArrayVersion.get(bitsPerBlock, true)
 
         bitArray = bitArrayVersion.createPalette(MAX_BLOCK_IN_SECTION)
 
         for (i in bitArray.words.indices) {
             bitArray.words[i] = buf.readIntLE()
         }
-
-        fun readInt(): Int = if (network) VarInts.readInt(buf) else buf.readIntLE()
 
         val paletteSize = readInt()
         palette = ArrayList(paletteSize)
