@@ -88,6 +88,15 @@ object CodecRegistry {
         registerCodec(1001, "1.21.170", "org.cloudburstmc.protocol.bedrock.codec.v1001.Bedrock_v1001")
         registerCodec(2168, "1.26.44", "org.cloudburstmc.protocol.bedrock.codec.v2168.Bedrock_v2168")
         registerCodec(2169, "1.26.45", "org.cloudburstmc.protocol.bedrock.codec.v2169.Bedrock_v2169")
+        // 1.26.50 and 1.26.51 are both bug-fix-only releases that share network protocol 2193
+        // (confirmed via Mojang/bedrock-protocol-docs release tags). If CloudburstMC's snapshot
+        // dependency doesn't yet ship a v2193 codec class, registerCodec() above safely no-ops
+        // with a logged warning (reflection-based Class.forName, not a compile-time reference) and
+        // falls back to v2169 - so this entry is safe to add ahead of the dependency catching up.
+        // Only registered once (not once per Minecraft version string) since sortedProtocolVersions
+        // is a plain list, not a set - a second add() here would insert a harmless-looking but
+        // needless duplicate 2193 entry.
+        registerCodec(2193, "1.26.51", "org.cloudburstmc.protocol.bedrock.codec.v2193.Bedrock_v2193")
 
 
         sortedProtocolVersions.sortDescending()

@@ -3,6 +3,11 @@ package com.retrivedmods.wrelay.codec
 object VersionDetector {
 
     private val versionRanges = mapOf(
+        // 1.26.50 and 1.26.51 are both bug-fix-only releases sharing network protocol 2193
+        // (confirmed via Mojang/bedrock-protocol-docs release tags).
+        2193 to listOf("1.26.50", "1.26.51"),
+        // 1.26.45 bumped the wire protocol to 2169 from 1.26.44's 2168.
+        2169 to listOf("1.26.45"),
         // 1.26.40 and 1.26.44 share protocol version 2168 (no wire-protocol break between
         // them - confirmed via minecraft.wiki/w/Protocol_version and bedrock-v/protocol-docs).
         2168 to listOf("1.26.40", "1.26.44"),

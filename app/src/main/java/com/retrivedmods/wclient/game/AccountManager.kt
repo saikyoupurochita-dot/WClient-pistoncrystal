@@ -23,7 +23,7 @@ object AccountManager {
     // Bedrock game version reported to Mojang/Xbox services when negotiating a Minecraft
     // session (net.raphimc.minecraftauth.bedrock.model.MinecraftSession). Keep this in sync with
     // com.retrivedmods.wclient.util.MinecraftUtils.RECOMMENDED_VERSION.
-    const val GAME_VERSION = "1.26.40"
+    const val GAME_VERSION = "1.26.51"
 
     // BedrockAuthManager (5.x) is a live, self-refreshing manager object rather than the old
     // immutable FullBedrockSession, so we pair it with a plain cached display name for UI use
