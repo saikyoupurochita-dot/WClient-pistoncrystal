@@ -91,7 +91,8 @@ class SurroundModule : Module("surround", ModuleCategory.Combat) {
                     "($dir)abs=($cellPos):cell=$cellId,canPlace=${canPlaceAt(cellPos)}"
                 }
                 session.displayClientMessage(
-                    "§b[SurroundDiag] playerPos=$currentPos, placeList size=${placeList.size}, airPlace=$airPlace, obsidianSlot=$obsidianSlot\n$cellDump"
+                    "§b[SurroundDiag] playerPos=$currentPos, placeList size=${placeList.size}, airPlace=$airPlace, obsidianSlot=$obsidianSlot, " +
+                        "blockMappingInitialized=${session.isBlockMappingInitialized}, mappingSize=${if (session.isBlockMappingInitialized) session.blockMapping.size else -1}\n$cellDump"
                 )
             }
         }

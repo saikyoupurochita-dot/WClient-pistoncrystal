@@ -171,7 +171,20 @@ class Level(val session: GameSession) {
                     // sections to.
                     chunks[chunk.hash] = chunk
 
-                    if (levelChunkParseCheckCount < 5 && !packet.isCachingEnabled && !packet.isRequestSubChunks) {
+                    // Only fires for chunks actually near the player right now (not just "the
+                    // first 5 chunks ever seen", which was almost always the spawn/lobby area and
+                    // told us nothing about wherever the player later teleports to test Surround/
+                    // PistonCrystal - those can be tens of thousands of chunks away from spawn on
+                    // some servers). Samples at the player's real current Y, not a hardcoded 64,
+                    // since a fixed height can fall outside subChunksLength for short/limited
+                    // worlds and just show an unpopulated section's default air value instead of
+                    // real terrain.
+                    val playerPos = session.localPlayer.vec3Position
+                    val playerChunkX = kotlin.math.floor(playerPos.x).toInt() shr 4
+                    val playerChunkZ = kotlin.math.floor(playerPos.z).toInt() shr 4
+                    val nearPlayer = kotlin.math.abs(packet.chunkX - playerChunkX) <= 2 &&
+                        kotlin.math.abs(packet.chunkZ - playerChunkZ) <= 2
+                    if ((levelChunkParseCheckCount < 5 || nearPlayer) && !packet.isCachingEnabled && !packet.isRequestSubChunks) {
                         levelChunkParseCheckCount++
                         // Sample a handful of local positions right after a successful parse, to
                         // tell apart "chunk.read() silently produced empty/garbage data" from
@@ -182,7 +195,7 @@ class Level(val session: GameSession) {
                         // untouched default - always session.blockMapping.airId, never real block
                         // data - which is a completely different problem from a populated section
                         // returning a rawId with no matching palette entry).
-                        val sampleY = 64
+                        val sampleY = kotlin.math.floor(playerPos.y).toInt()
                         val sectionIndex = (if (is384WorldSupported) sampleY + 64 else sampleY) shr 4
                         val populated = chunk.sectionStorage.getOrNull(sectionIndex)?.populated
                         val samples = (0..15 step 4).joinToString(" | ") { x ->
@@ -191,9 +204,9 @@ class Level(val session: GameSession) {
                             "x=$x:rawId=$rawId,def=${def.identifier}"
                         }
                         session.displayClientMessage(
-                            "§d[ChunkParseCheck] chunk(${packet.chunkX},${packet.chunkZ}) y=$sampleY " +
+                            "§d[ChunkParseCheck]${if (nearPlayer) "[NEAR-PLAYER]" else ""} chunk(${packet.chunkX},${packet.chunkZ}) y=$sampleY " +
                                 "section=$sectionIndex populated=$populated airId=${session.blockMapping.airId} " +
-                                "mappingSize=${session.blockMapping.size} $samples"
+                                "mappingSize=${session.blockMapping.size} blockMappingInitialized=${session.isBlockMappingInitialized} $samples"
                         )
                     }
                 } catch (e: Exception) {
