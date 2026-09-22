@@ -147,42 +147,53 @@ class GameSession(val wRelaySession: WRelaySession) : ComposedPacketHandler {
                     startGameReceived = true
                     Log.i("GameSession", "StartGamePacket received")
 
-                    // Prefer the block palette the *server itself* sent in this exact packet over
-                    // our bundled per-protocol-version asset files. Those asset files only go up to
-                    // an old protocol (they need to be hand-updated every Minecraft version), so on
-                    // any server newer than that, block runtime IDs looked up from them are silently
-                    // wrong (e.g. asking for "minecraft:obsidian" and getting back some unrelated
-                    // block) - which makes every placement attempt get rejected by the server, since
-                    // the block it's told to place doesn't match the item actually being used.
-                    // The server's own palette is *always* correct for whatever version it's running,
-                    // so this can never go stale the way the bundled files do.
+                    // BlockPropertyData (StartGamePacket.blockProperties) only carries a block's
+                    // *name* (no runtime id field exists on it at all - confirmed against the real
+                    // bedrock-codec source) and, on most servers, is a *small list of custom/extra
+                    // blocks only* - not the full vanilla block table. BlockMapping.fromPalette()
+                    // hash-sorts whatever list it's given and assigns sequential runtime ids to
+                    // that order, which is only valid if the list is genuinely complete: hash-
+                    // sorting a 98-entry subset and calling the result "runtime ids" produces
+                    // numbers that don't correspond to anything the real server/client agree on.
+                    // That's exactly what was happening here - a small, technically-non-empty
+                    // "live palette" was winning over the bundled asset (which already showed
+                    // 4687 real, correctly-assigned entries for this exact protocol) purely
+                    // because it didn't throw, even though it was structurally incapable of being
+                    // correct. Bundled asset now always loads first as the real primary source;
+                    // the "live" hash-sort path is kept only as a last-resort fallback for when no
+                    // bundled asset exists at all for this protocol version.
                     var blockMappingSource = "none"
-                    val livePalette = extractBlockPaletteFromStartGame(packet)
-                    if (livePalette != null) {
-                        try {
-                            blockMapping = BlockMapping.fromPalette(livePalette)
-                            blockMappingSource = "live (${livePalette.size} palette entries)"
-                            Log.i("GameSession", "Loaded block mapping from the server's own StartGamePacket palette (${livePalette.size} entries)")
-                        } catch (e: Exception) {
-                            Log.e("GameSession", "Failed to build block mapping from StartGamePacket palette, falling back to bundled asset", e)
-                            queueDiagnostic("§c[BlockMappingCheck] live palette build FAILED: ${e.javaClass.simpleName}: ${e.message}")
-                        }
-                    } else {
-                        Log.w("GameSession", "StartGamePacket.blockProperties was empty - falling back to the bundled per-protocol asset file, which may be outdated for this server's version")
-                        queueDiagnostic("§e[BlockMappingCheck] StartGamePacket.blockProperties was empty/null - no live palette to use")
-                    }
 
                     try {
-                        if (!isBlockMappingInitialized) {
-                            blockMapping = blockMappingProvider.craftMapping(protocolVersion)
-                            blockMappingSource = "bundled asset (protocol $protocolVersion)"
-                        }
-                        itemMapping = itemMappingProvider.craftMapping(protocolVersion)
-
-                        Log.i("GameSession", "Loaded mappings for protocol $protocolVersion")
+                        blockMapping = blockMappingProvider.craftMapping(protocolVersion)
+                        blockMappingSource = "bundled asset (protocol $protocolVersion)"
+                        Log.i("GameSession", "Loaded block mapping for protocol $protocolVersion")
                     } catch (e: Exception) {
-                        Log.e("GameSession", "Failed to load mappings for protocol $protocolVersion", e)
-                        queueDiagnostic("§c[BlockMappingCheck] bundled-asset fallback ALSO FAILED: ${e.javaClass.simpleName}: ${e.message}")
+                        Log.e("GameSession", "Failed to load bundled block mapping for protocol $protocolVersion, trying the server's own (partial) StartGamePacket palette as a last resort", e)
+                        queueDiagnostic("§c[BlockMappingCheck] bundled asset FAILED: ${e.javaClass.simpleName}: ${e.message}")
+
+                        val livePalette = extractBlockPaletteFromStartGame(packet)
+                        if (livePalette != null) {
+                            try {
+                                blockMapping = BlockMapping.fromPalette(livePalette)
+                                blockMappingSource = "live (${livePalette.size} palette entries, low confidence)"
+                                Log.w("GameSession", "Falling back to a hash-sorted live palette (${livePalette.size} entries) - this is only reliable if blockProperties happened to contain the complete block list")
+                            } catch (e2: Exception) {
+                                Log.e("GameSession", "Live palette fallback also failed", e2)
+                                queueDiagnostic("§c[BlockMappingCheck] live palette fallback ALSO FAILED: ${e2.javaClass.simpleName}: ${e2.message}")
+                            }
+                        }
+                    }
+
+                    // Independent of however blockMapping above turned out - itemMapping (used for
+                    // hotbar/inventory item lookups, unrelated to block placement) always gets its
+                    // own attempt, so a block-mapping failure can't leave it unset too.
+                    try {
+                        itemMapping = itemMappingProvider.craftMapping(protocolVersion)
+                        Log.i("GameSession", "Loaded item mapping for protocol $protocolVersion")
+                    } catch (e: Exception) {
+                        Log.e("GameSession", "Failed to load item mapping for protocol $protocolVersion", e)
+                        queueDiagnostic("§c[ItemMappingCheck] FAILED: ${e.javaClass.simpleName}: ${e.message}")
                     }
 
                     // CRITICAL: codecHelper.blockDefinitions was never being set (only
